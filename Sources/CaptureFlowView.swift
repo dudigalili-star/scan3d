@@ -13,6 +13,7 @@ struct CaptureFlowView: View {
     @State private var phase: Phase = .capture
     @State private var progress: Double = 0
     @State private var errorText = ""
+    @State private var recordingStart: Date?
 
     var body: some View {
         ZStack {
@@ -58,46 +59,81 @@ struct CaptureFlowView: View {
                 }
                 .buttonStyle(.bordered)
                 Spacer()
-                if case .capturing = captureState {
-                    Text("\(session.numberOfShotsTaken) תמונות")
-                        .padding(8)
+                if case .capturing = captureState, let recordingStart {
+                    TimelineView(.periodic(from: .now, by: 1)) { context in
+                        let seconds = Int(context.date.timeIntervalSince(recordingStart))
+                        HStack(spacing: 6) {
+                            Circle().fill(.red).frame(width: 10, height: 10)
+                            Text(String(format: "%d:%02d", seconds / 60, seconds % 60))
+                                .monospacedDigit()
+                        }
+                        .padding(.horizontal, 12).padding(.vertical, 6)
                         .background(.ultraThinMaterial, in: Capsule())
+                    }
                 }
             }
             .padding()
 
             Spacer()
 
-            VStack(spacing: 12) {
+            VStack(spacing: 14) {
                 switch captureState {
                 case .ready, .initializing:
                     hint("מכין מצלמה…")
                 case .detecting:
-                    hint("כוון לחלק עד שהקופסה עוטפת אותו")
-                    bigButton("התחל סריקה") { session.startCapturing() }
+                    hint("כוון לחלק עד שהקופסה עוטפת אותו, ולחץ להתחיל")
+                    recordButton(recording: false) {
+                        recordingStart = Date()
+                        session.startCapturing()
+                    }
                     Button("אפס קופסה") { _ = session.resetDetection() }
+                        .font(.footnote)
                 case .capturing:
                     if session.userCompletedScanPass {
-                        hint("סיבוב הושלם")
+                        hint("הסיבוב הושלם")
                         bigButton("בנה מודל ושרטוט") { session.finish() }
                         HStack(spacing: 12) {
                             Button("הפוך את החלק וסרוק מלמטה") { session.beginNewScanPassAfterFlip() }
                             Button("סיבוב נוסף") { session.beginNewScanPass() }
                         }
                         .buttonStyle(.bordered)
+                        .font(.footnote)
                     } else {
-                        hint("הקף את החלק לאט")
-                        Button("סיים עכשיו") { session.finish() }
-                            .buttonStyle(.bordered)
+                        hint("הקף את החלק לאט, כמו בצילום וידאו")
+                        recordButton(recording: true) { session.finish() }
+                        Text("לחץ לעצירה ובניית מודל")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
                 case .finishing:
-                    ProgressView("מסיים צילום…")
+                    ProgressView("מסיים…")
                 default:
                     EmptyView()
                 }
             }
             .padding(.bottom, 32)
         }
+    }
+
+    /// Video-style shutter: a red circle to start, a red square to stop.
+    private func recordButton(recording: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            ZStack {
+                Circle()
+                    .stroke(.white, lineWidth: 5)
+                    .frame(width: 78, height: 78)
+                if recording {
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(.red)
+                        .frame(width: 30, height: 30)
+                } else {
+                    Circle()
+                        .fill(.red)
+                        .frame(width: 62, height: 62)
+                }
+            }
+        }
+        .buttonStyle(.plain)
     }
 
     private func hint(_ text: String) -> some View {

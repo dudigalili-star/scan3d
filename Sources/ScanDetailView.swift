@@ -1,7 +1,7 @@
 import SwiftUI
 import PDFKit
 
-private struct PDFKitView: UIViewRepresentable {
+struct PDFKitView: UIViewRepresentable {
     let url: URL
     func makeUIView(context: Context) -> PDFView {
         let view = PDFView()
@@ -13,12 +13,12 @@ private struct PDFKitView: UIViewRepresentable {
     func updateUIView(_ view: PDFView, context: Context) {}
 }
 
-private struct ShareItem: Identifiable {
+struct ShareItem: Identifiable {
     let id = UUID()
     let url: URL
 }
 
-private struct ShareSheet: UIViewControllerRepresentable {
+struct ShareSheet: UIViewControllerRepresentable {
     let url: URL
     func makeUIViewController(context: Context) -> UIActivityViewController {
         UIActivityViewController(activityItems: [url], applicationActivities: nil)

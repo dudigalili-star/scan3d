@@ -4,6 +4,7 @@ struct ContentView: View {
     @EnvironmentObject private var store: ScanStore
     @State private var capturing: ScanItem?
     @State private var path: [ScanItem] = []
+    @State private var photoDrawing = false
 
     private let columns = [GridItem(.flexible(), spacing: 14), GridItem(.flexible(), spacing: 14)]
 
@@ -38,6 +39,19 @@ struct ContentView: View {
                 ScanDetailView(scan: scan)
             }
             .overlay(alignment: .bottom) { scanButton }
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        photoDrawing = true
+                    } label: {
+                        Label("שרטוט מתמונה", systemImage: "doc.viewfinder")
+                            .labelStyle(.titleAndIcon)
+                    }
+                }
+            }
+        }
+        .fullScreenCover(isPresented: $photoDrawing) {
+            PhotoDrawingView()
         }
         .fullScreenCover(item: $capturing) { scan in
             CaptureFlowView(scan: scan) { success in

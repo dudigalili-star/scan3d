@@ -14,6 +14,8 @@ struct CaptureFlowView: View {
     @State private var progress: Double = 0
     @State private var errorText = ""
     @State private var recordingStart: Date?
+    @State private var autoFinishIn = 0
+    @State private var autoFinishCancelled = false
 
     var body: some View {
         ZStack {
@@ -22,6 +24,18 @@ struct CaptureFlowView: View {
                 if let session {
                     ObjectCaptureView(session: session)
                         .ignoresSafeArea()
+                        .onTapGesture {
+                            // Tap the part: frame it and start recording in one step.
+                            switch captureState {
+                            case .ready:
+                                _ = session.startDetecting()
+                            case .detecting:
+                                recordingStart = Date()
+                                session.startCapturing()
+                            default:
+                                break
+                            }
+                        }
                     captureControls(session)
                 } else {
                     ProgressView()
@@ -78,10 +92,13 @@ struct CaptureFlowView: View {
 
             VStack(spacing: 14) {
                 switch captureState {
-                case .ready, .initializing:
+                case .initializing:
                     hint("מכין מצלמה…")
+                case .ready:
+                    hint("כוון את המצלמה לחלק")
+                    bigButton("המשך") { _ = session.startDetecting() }
                 case .detecting:
-                    hint("כוון לחלק עד שהקופסה עוטפת אותו, ולחץ להתחיל")
+                    hint("לחץ על החלק כדי להתחיל")
                     recordButton(recording: false) {
                         recordingStart = Date()
                         session.startCapturing()
@@ -90,11 +107,17 @@ struct CaptureFlowView: View {
                         .font(.footnote)
                 case .capturing:
                     if session.userCompletedScanPass {
-                        hint("הסיבוב הושלם")
-                        bigButton("בנה מודל ושרטוט") { session.finish() }
+                        hint(autoFinishIn > 0 ? "הסיבוב הושלם. בונה מודל בעוד \(autoFinishIn)…" : "הסיבוב הושלם")
+                        bigButton("בנה מודל ושרטוט עכשיו") { session.finish() }
                         HStack(spacing: 12) {
-                            Button("הפוך את החלק וסרוק מלמטה") { session.beginNewScanPassAfterFlip() }
-                            Button("סיבוב נוסף") { session.beginNewScanPass() }
+                            Button("הפוך את החלק וסרוק מלמטה") {
+                                autoFinishCancelled = true
+                                session.beginNewScanPassAfterFlip()
+                            }
+                            Button("סיבוב נוסף") {
+                                autoFinishCancelled = true
+                                session.beginNewScanPass()
+                            }
                         }
                         .buttonStyle(.bordered)
                         .font(.footnote)
@@ -112,6 +135,18 @@ struct CaptureFlowView: View {
                 }
             }
             .padding(.bottom, 32)
+        }
+        .onChange(of: session.userCompletedScanPass) { _, completed in
+            guard completed, !autoFinishCancelled else { return }
+            Task { @MainActor in
+                for remaining in stride(from: 4, through: 1, by: -1) {
+                    autoFinishIn = remaining
+                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+                    if autoFinishCancelled || !session.userCompletedScanPass { autoFinishIn = 0; return }
+                }
+                autoFinishIn = 0
+                if case .capturing = captureState { session.finish() }
+            }
         }
     }
 
@@ -165,7 +200,15 @@ struct CaptureFlowView: View {
             captureState = state
             switch state {
             case .ready:
-                _ = newSession.startDetecting()   // skip a tap: go straight to framing the part
+                // Go straight to framing the part. Calling this inside the state stream right away
+                // can be ignored, so try a few times after a short delay.
+                Task { @MainActor in
+                    for _ in 0..<5 {
+                        try? await Task.sleep(nanoseconds: 600_000_000)
+                        guard case .ready = captureState else { return }
+                        if newSession.startDetecting() { return }
+                    }
+                }
             case .completed:
                 phase = .reconstruct
                 session = nil          // release the capture session before reconstruction

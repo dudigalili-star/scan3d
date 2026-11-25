@@ -1,0 +1,28 @@
+name: Scan3D
+options:
+  bundleIdPrefix: com.scan3d
+  deploymentTarget:
+    iOS: "17.0"
+  developmentLanguage: he
+targets:
+  Scan3D:
+    type: application
+    platform: iOS
+    sources: [Sources]
+    info:
+      path: Sources/Info.plist
+      properties:
+        CFBundleDisplayName: "סורק 3D"
+        CFBundleShortVersionString: "0.1"
+        CFBundleVersion: "1"
+        NSCameraUsageDescription: "המצלמה נדרשת כדי לסרוק חלקים"
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        UIRequiredDeviceCapabilities: [arm64]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.scan3d.app
+        SWIFT_VERSION: "5.0"
+        TARGETED_DEVICE_FAMILY: "1"

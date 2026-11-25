@@ -44,6 +44,8 @@ struct CaptureFlowView: View {
             }
         }
         .task { await runCapture() }
+        .onAppear { UIApplication.shared.isIdleTimerDisabled = true }   // keep the screen on while scanning
+        .onDisappear { UIApplication.shared.isIdleTimerDisabled = false }
     }
 
     @ViewBuilder
@@ -68,20 +70,23 @@ struct CaptureFlowView: View {
 
             VStack(spacing: 12) {
                 switch captureState {
-                case .ready:
-                    hint("כוון את המסגרת לחלק")
-                    bigButton("המשך") { _ = session.startDetecting() }
+                case .ready, .initializing:
+                    hint("מכין מצלמה…")
                 case .detecting:
-                    hint("בדוק שהקופסה עוטפת את כל החלק")
+                    hint("כוון לחלק עד שהקופסה עוטפת אותו")
                     bigButton("התחל סריקה") { session.startCapturing() }
-                    Button("אפס") { _ = session.resetDetection() }
+                    Button("אפס קופסה") { _ = session.resetDetection() }
                 case .capturing:
                     if session.userCompletedScanPass {
-                        hint("סיבוב הושלם. סיבוב נוסף בגובה אחר משפר את המודל.")
-                        bigButton("סיום ובניית מודל") { session.finish() }
-                        Button("סיבוב נוסף") { session.beginNewScanPass() }
+                        hint("סיבוב הושלם")
+                        bigButton("בנה מודל ושרטוט") { session.finish() }
+                        HStack(spacing: 12) {
+                            Button("הפוך את החלק וסרוק מלמטה") { session.beginNewScanPassAfterFlip() }
+                            Button("סיבוב נוסף") { session.beginNewScanPass() }
+                        }
+                        .buttonStyle(.bordered)
                     } else {
-                        hint("הקף את החלק לאט, ושמור עליו במרכז")
+                        hint("הקף את החלק לאט")
                         Button("סיים עכשיו") { session.finish() }
                             .buttonStyle(.bordered)
                     }
@@ -123,6 +128,8 @@ struct CaptureFlowView: View {
         for await state in newSession.stateUpdates {
             captureState = state
             switch state {
+            case .ready:
+                _ = newSession.startDetecting()   // skip a tap: go straight to framing the part
             case .completed:
                 phase = .reconstruct
                 session = nil          // release the capture session before reconstruction

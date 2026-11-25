@@ -43,6 +43,7 @@ struct ScanDetailView: View {
     @State private var dxfURL: URL?
     @State private var drawingVersion = 0
     @State private var drawingSizeMM: SIMD3<Double>?
+    @State private var drawingError: String?
     @State private var showRename = false
     @State private var showDimensionEditor = false
     @State private var showAddToDrawing = false
@@ -79,6 +80,17 @@ struct ScanDetailView: View {
                         .controlSize(.large)
                         .padding(.bottom, 24)
                     }
+            } else if let drawingError {
+                ContentUnavailableView {
+                    Label("השרטוט לא נוצר", systemImage: "exclamationmark.triangle")
+                } description: {
+                    Text(drawingError)
+                } actions: {
+                    Button("נסה שוב") {
+                        self.drawingError = nil
+                        Task { mesh == nil ? await loadMesh() : await makeDrawing() }
+                    }
+                }
             } else {
                 Spacer()
                 ProgressView("מכין שרטוט…")
@@ -228,7 +240,7 @@ struct ScanDetailView: View {
             sizeMeters = await Task.detached { Exporter.orientedSize(loaded.positions) }.value
             await makeDrawing()
         } catch {
-            errorText = error.localizedDescription
+            drawingError = "לא הצלחתי לקרוא את המודל: \(error.localizedDescription)"
         }
     }
 
@@ -257,9 +269,10 @@ struct ScanDetailView: View {
             drawingSizeMM = size
             drawingURL = pdf
             dxfURL = dxf
+            drawingError = nil
             drawingVersion += 1
         } catch {
-            errorText = "יצירת השרטוט נכשלה: \(error.localizedDescription)"
+            drawingError = "יצירת השרטוט נכשלה: \(error.localizedDescription)"
         }
     }
 

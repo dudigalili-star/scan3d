@@ -1,5 +1,6 @@
 import Foundation
 import SceneKit
+import ModelIO
 import simd
 
 struct MeshData {
@@ -29,6 +30,44 @@ enum Exporter {
     // MARK: Loading
 
     static func loadMesh(from url: URL) throws -> MeshData {
+        if let mesh = loadWithModelIO(url), !mesh.indices.isEmpty { return mesh }
+        return try loadWithSceneKit(url)
+    }
+
+    /// Reads triangles straight from the USDZ with ModelIO.
+    static func loadWithModelIO(_ url: URL) -> MeshData? {
+        let asset = MDLAsset(url: url)
+        guard let meshes = asset.childObjects(of: MDLMesh.self) as? [MDLMesh], !meshes.isEmpty else { return nil }
+        var out = MeshData()
+        for mesh in meshes {
+            guard let attr = mesh.vertexAttributeData(forAttributeNamed: MDLVertexAttributePosition, as: .float3) else { continue }
+            let base = UInt32(out.positions.count)
+            let world = MDLTransform.globalTransform(with: mesh, atTime: 0)
+            let start = attr.dataStart
+            let stride = attr.stride
+            for i in 0..<mesh.vertexCount {
+                let o = i * stride
+                let p = SIMD3<Float>(start.loadUnaligned(fromByteOffset: o, as: Float.self),
+                                     start.loadUnaligned(fromByteOffset: o + 4, as: Float.self),
+                                     start.loadUnaligned(fromByteOffset: o + 8, as: Float.self))
+                let w = world * SIMD4<Float>(p, 1)
+                out.positions.append(SIMD3(w.x, w.y, w.z))
+            }
+            guard let submeshes = mesh.submeshes as? [MDLSubmesh] else { continue }
+            for sub in submeshes where sub.geometryType == .triangles {
+                let buffer = sub.indexBuffer(asIndexType: .uInt32)
+                let map = buffer.map()
+                let count = sub.indexCount
+                for i in 0..<count {
+                    let v = map.bytes.loadUnaligned(fromByteOffset: i * 4, as: UInt32.self)
+                    out.indices.append(base + v)
+                }
+            }
+        }
+        return out.positions.isEmpty ? nil : out
+    }
+
+    static func loadWithSceneKit(_ url: URL) throws -> MeshData {
         let scene = try SCNScene(url: url, options: nil)
         var mesh = MeshData()
         scene.rootNode.enumerateHierarchy { node, _ in
@@ -57,20 +96,45 @@ enum Exporter {
                     mesh.positions.append(SIMD3(w.x, w.y, w.z))
                 }
             }
-            for element in geometry.elements where element.primitiveType == .triangles {
-                let indexCount = element.primitiveCount * 3
+            for element in geometry.elements {
                 let bytesPerIndex = element.bytesPerIndex
                 element.data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
-                    guard raw.count >= indexCount * bytesPerIndex else { return }
-                    for i in 0..<indexCount {
-                        let o = i * bytesPerIndex
-                        let v: UInt32
+                    func index(_ k: Int) -> UInt32 {
+                        let o = k * bytesPerIndex
                         switch bytesPerIndex {
-                        case 1: v = UInt32(raw.load(fromByteOffset: o, as: UInt8.self))
-                        case 2: v = UInt32(raw.loadUnaligned(fromByteOffset: o, as: UInt16.self))
-                        default: v = raw.loadUnaligned(fromByteOffset: o, as: UInt32.self)
+                        case 1: return UInt32(raw.load(fromByteOffset: o, as: UInt8.self))
+                        case 2: return UInt32(raw.loadUnaligned(fromByteOffset: o, as: UInt16.self))
+                        default: return raw.loadUnaligned(fromByteOffset: o, as: UInt32.self)
                         }
-                        mesh.indices.append(base + v)
+                    }
+                    let available = raw.count / max(bytesPerIndex, 1)
+                    switch element.primitiveType {
+                    case .triangles:
+                        let n = min(element.primitiveCount * 3, available)
+                        for k in 0..<n { mesh.indices.append(base + index(k)) }
+                    case .triangleStrip:
+                        let n = min(element.primitiveCount + 2, available)
+                        if n >= 3 {
+                            for k in 0..<(n - 2) {
+                                let a = index(k), b = index(k + 1), c = index(k + 2)
+                                if k % 2 == 0 { mesh.indices += [base + a, base + b, base + c] }
+                                else { mesh.indices += [base + b, base + a, base + c] }
+                            }
+                        }
+                    case .polygon:
+                        // Layout: one vertex count per polygon, then all the polygons' indices.
+                        let polygons = element.primitiveCount
+                        var cursor = polygons
+                        for poly in 0..<polygons {
+                            let corners = Int(index(poly))
+                            guard corners >= 3, cursor + corners <= available else { cursor += corners; continue }
+                            for k in 1..<(corners - 1) {
+                                mesh.indices += [base + index(cursor), base + index(cursor + k), base + index(cursor + k + 1)]
+                            }
+                            cursor += corners
+                        }
+                    default:
+                        break
                     }
                 }
             }

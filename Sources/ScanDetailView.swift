@@ -1,4 +1,17 @@
 import SwiftUI
+import PDFKit
+
+private struct PDFKitView: UIViewRepresentable {
+    let url: URL
+    func makeUIView(context: Context) -> PDFView {
+        let view = PDFView()
+        view.autoScales = true
+        view.backgroundColor = .secondarySystemBackground
+        view.document = PDFDocument(url: url)
+        return view
+    }
+    func updateUIView(_ view: PDFView, context: Context) {}
+}
 
 private struct ShareItem: Identifiable {
     let id = UUID()
@@ -25,25 +38,53 @@ struct ScanDetailView: View {
     @State private var share: ShareItem?
     @State private var busy = false
     @State private var errorText: String?
+    @State private var tab = 0
+    @State private var drawingURL: URL?
+    @State private var dxfURL: URL?
+    @State private var drawingVersion = 0
+    @State private var drawingSizeMM: SIMD3<Double>?
 
     private var scale: Double { scan.meta.scale }
 
     var body: some View {
         VStack(spacing: 0) {
-            if scan.hasModel {
-                ModelSceneView(url: scan.modelURL, controller: measure)
-            } else {
-                ContentUnavailableView("אין מודל לסריקה הזו", systemImage: "cube.transparent")
+            Picker("", selection: $tab) {
+                Text("מודל 3D").tag(0)
+                Text("שרטוט").tag(1)
             }
-            infoPanel
+            .pickerStyle(.segmented)
+            .padding(.horizontal)
+            .padding(.vertical, 8)
+
+            if !scan.hasModel {
+                ContentUnavailableView("אין מודל לסריקה הזו", systemImage: "cube.transparent")
+            } else if tab == 0 {
+                ModelSceneView(url: scan.modelURL, controller: measure)
+                infoPanel
+            } else if let drawingURL {
+                PDFKitView(url: drawingURL)
+                    .id(drawingVersion)
+            } else {
+                Spacer()
+                ProgressView("מכין שרטוט…")
+                Spacer()
+            }
         }
         .navigationTitle(scan.meta.name)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
-                    ForEach(ExportFormat.allCases) { format in
-                        Button(format.title) { export(format) }
+                    Section("שרטוט") {
+                        Button("שרטוט PDF") { if let drawingURL { share = ShareItem(url: drawingURL) } }
+                            .disabled(drawingURL == nil)
+                        Button("שרטוט DXF") { if let dxfURL { share = ShareItem(url: dxfURL) } }
+                            .disabled(dxfURL == nil)
+                    }
+                    Section("מודל 3D") {
+                        ForEach(ExportFormat.allCases) { format in
+                            Button(format.title) { export(format) }
+                        }
                     }
                 } label: {
                     Label("ייצוא", systemImage: "square.and.arrow.up")
@@ -68,11 +109,17 @@ struct ScanDetailView: View {
             ShareSheet(url: item.url)
         }
         .task { await loadMesh() }
+        .onChange(of: scan.meta.scale) { _, _ in
+            Task { await makeDrawing() }
+        }
     }
 
     private var infoPanel: some View {
         VStack(alignment: .leading, spacing: 10) {
-            if let size = sizeMeters {
+            if let size = drawingSizeMM {
+                Text("רוחב \(DrawingGenerator.mmText(size.x)) × עומק \(DrawingGenerator.mmText(size.y)) × גובה \(DrawingGenerator.mmText(size.z)) מ\"מ")
+                    .font(.subheadline.monospacedDigit())
+            } else if let size = sizeMeters {
                 Text("מידות חיצוניות: \(mm(size.x)) × \(mm(size.y)) × \(mm(size.z)) מ\"מ")
                     .font(.subheadline.monospacedDigit())
             } else if scan.hasModel {
@@ -126,8 +173,34 @@ struct ScanDetailView: View {
             }.value
             mesh = loaded
             sizeMeters = await Task.detached { Exporter.orientedSize(loaded.positions) }.value
+            await makeDrawing()
         } catch {
             errorText = error.localizedDescription
+        }
+    }
+
+    private func makeDrawing() async {
+        guard let mesh else { return }
+        let scale = self.scale
+        let title = scan.meta.name
+        let date = scan.meta.created
+        let pdf = scan.exportsURL.appendingPathComponent("\(scan.id)-drawing.pdf")
+        let dxf = scan.exportsURL.appendingPathComponent("\(scan.id)-drawing.dxf")
+        let folder = scan.exportsURL
+        do {
+            let size = try await Task.detached(priority: .userInitiated) { () throws -> SIMD3<Double> in
+                try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                guard let model = DrawingGenerator.prepare(mesh, scale: scale) else { throw ExportError.noGeometry }
+                try DrawingGenerator.renderPDF(model, title: title, date: date, to: pdf)
+                try DrawingGenerator.writeDXF(model, to: dxf)
+                return model.size
+            }.value
+            drawingSizeMM = size
+            drawingURL = pdf
+            dxfURL = dxf
+            drawingVersion += 1
+        } catch {
+            errorText = "יצירת השרטוט נכשלה: \(error.localizedDescription)"
         }
     }
 

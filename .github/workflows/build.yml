@@ -1,8 +1,7 @@
 name: Build iOS app
 
+# Apple-silicon runner: manual only for now (queue was congested); the Intel workflow builds on every push.
 on:
-  push:
-    branches: [main]
   workflow_dispatch: {}
 
 permissions:

@@ -17,6 +17,7 @@ struct ScanItem: Identifiable, Hashable {
     var exportsURL: URL { folder.appendingPathComponent("Exports", isDirectory: true) }
     var modelURL: URL { folder.appendingPathComponent("model.usdz") }
     var metaURL: URL { folder.appendingPathComponent("meta.json") }
+    var thumbnailURL: URL { folder.appendingPathComponent("thumbnail.png") }
     var hasModel: Bool { FileManager.default.fileExists(atPath: modelURL.path) }
 
     static func == (a: ScanItem, b: ScanItem) -> Bool { a.id == b.id }

@@ -43,6 +43,8 @@ struct ScanDetailView: View {
     @State private var dxfURL: URL?
     @State private var drawingVersion = 0
     @State private var drawingSizeMM: SIMD3<Double>?
+    @State private var showRename = false
+    @State private var newName = ""
 
     private var scale: Double { scan.meta.scale }
 
@@ -74,6 +76,14 @@ struct ScanDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    newName = scan.meta.name
+                    showRename = true
+                } label: {
+                    Label("שנה שם", systemImage: "pencil")
+                }
+            }
+            ToolbarItem(placement: .topBarTrailing) {
                 Menu {
                     Section("שרטוט") {
                         Button("שרטוט PDF") { if let drawingURL { share = ShareItem(url: drawingURL) } }
@@ -91,6 +101,18 @@ struct ScanDetailView: View {
                 }
                 .disabled(mesh == nil || busy)
             }
+        }
+        .alert("שם הסריקה", isPresented: $showRename) {
+            TextField("שם", text: $newName)
+            Button("שמור") {
+                let trimmed = newName.trimmingCharacters(in: .whitespaces)
+                if !trimmed.isEmpty {
+                    scan.meta.name = trimmed
+                    store.save(scan)
+                    Task { await makeDrawing() }
+                }
+            }
+            Button("ביטול", role: .cancel) {}
         }
         .alert("כיול לפי קליבר", isPresented: $showCalibration) {
             TextField("מידה במ\"מ", text: $caliperText)

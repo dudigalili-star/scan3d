@@ -101,7 +101,10 @@ struct DimensionsEditor: View {
         meta.extraDimensions = extras.compactMap { d in
             let name = d.name.trimmingCharacters(in: .whitespaces)
             guard !name.isEmpty, let v = Self.parse(extraTexts[d.id] ?? "") else { return nil }
-            return ExtraDimension(id: d.id, name: name, value: v)
+            var kept = d
+            kept.name = name
+            kept.value = v
+            return kept
         }
         onSave(meta)
         dismiss()

@@ -8,6 +8,24 @@ struct DrawingModel {
     var triangles: [SIMD3<Int32>]
     var normals: [SIMD3<Double>]
     var size: SIMD3<Double>
+    var frame: Frame
+
+    /// Maps a point of the original mesh (meters) into drawing coordinates (mm).
+    struct Frame {
+        var k: Double
+        var center: SIMD2<Double>
+        var c: Double
+        var s: Double
+        var swapped: Bool
+        var lo: SIMD3<Double>
+
+        func local(_ p: SIMD3<Float>) -> SIMD3<Double> {
+            let q = SIMD2(Double(p.x) * k, Double(p.z) * k) - center
+            var v = SIMD3(q.x * c + q.y * s, -q.x * s + q.y * c, Double(p.y) * k)
+            if swapped { v = SIMD3(v.y, v.x, v.z) }
+            return v - lo
+        }
+    }
 }
 
 enum DrawingGenerator {
@@ -78,7 +96,8 @@ enum DrawingGenerator {
         }
         var lo = SIMD3<Double>(repeating: .infinity), hi = SIMD3<Double>(repeating: -.infinity)
         for p in local { lo = simd_min(lo, p); hi = simd_max(hi, p) }
-        if hi.y - lo.y > hi.x - lo.x {
+        let swapped = hi.y - lo.y > hi.x - lo.x
+        if swapped {
             local = local.map { SIMD3($0.y, $0.x, $0.z) }
             lo = SIMD3(lo.y, lo.x, lo.z); hi = SIMD3(hi.y, hi.x, hi.z)
         }
@@ -90,7 +109,8 @@ enum DrawingGenerator {
             let len = simd_length(n)
             return len > 0 ? n / len : .zero
         }
-        return DrawingModel(points: local, triangles: tris, normals: normals, size: hi - lo)
+        let frame = DrawingModel.Frame(k: k, center: center, c: c, s: s, swapped: swapped, lo: lo)
+        return DrawingModel(points: local, triangles: tris, normals: normals, size: hi - lo, frame: frame)
     }
 
     private static func trimmedSpan(_ values: inout [Double]) -> Double {
@@ -131,7 +151,7 @@ enum DrawingGenerator {
         return true
     }
 
-    private static func largeComponents(_ tris: [SIMD3<Int32>], vertexCount: Int, minShare: Double) -> [SIMD3<Int32>] {
+    static func largeComponents(_ tris: [SIMD3<Int32>], vertexCount: Int, minShare: Double) -> [SIMD3<Int32>] {
         var parent = Array(0..<vertexCount)
         func find(_ x: Int) -> Int {
             var x = x
@@ -283,6 +303,18 @@ enum DrawingGenerator {
             label(ctx, "מבט עליון", at: CGPoint(x: fx + CGFloat(L) * s / 2, y: topBase + 8), size: 9, centered: true)
             label(ctx, "מבט צד", at: CGPoint(x: rx + CGFloat(W) * s / 2, y: baseY + 8), size: 9, centered: true)
 
+            // Dimensions the user measured on the model, drawn on the view that shows them best
+            for d in extras {
+                guard let pair = measuredPoints(d, m) else { continue }
+                let (a, b) = pair
+                let (view, origin) = placements[bestView(a, b)]
+                func pt(_ p: SIMD3<Double>) -> CGPoint {
+                    let q = view.project(p)
+                    return CGPoint(x: origin.x + CGFloat(q.x) * s, y: origin.y - CGFloat(q.y) * s)
+                }
+                pointDimension(ctx, from: pt(a), to: pt(b), text: mmText(d.value))
+            }
+
             // Extra dimensions typed by the user
             if !extras.isEmpty {
                 let box = CGRect(x: 30, y: 492, width: 470, height: 88)
@@ -324,6 +356,59 @@ enum DrawingGenerator {
             }
         }
         return scaleLabel(paper)
+    }
+
+    /// Drawing coordinates of the two points of a measured dimension, if it has them.
+    static func measuredPoints(_ d: ExtraDimension, _ m: DrawingModel) -> (SIMD3<Double>, SIMD3<Double>)? {
+        guard let p1 = d.p1, let p2 = d.p2, p1.count == 3, p2.count == 3 else { return nil }
+        return (m.frame.local(SIMD3(p1[0], p1[1], p1[2])), m.frame.local(SIMD3(p2[0], p2[1], p2[2])))
+    }
+
+    /// 0 = front, 1 = top, 2 = right: the view whose viewing axis is closest to perpendicular to the segment.
+    static func bestView(_ a: SIMD3<Double>, _ b: SIMD3<Double>) -> Int {
+        let d = simd_abs(b - a)
+        if d.y <= d.x && d.y <= d.z { return 0 }
+        if d.z <= d.x { return 1 }
+        return 2
+    }
+
+    private static let dimensionColor = UIColor(red: 0.0, green: 0.25, blue: 0.75, alpha: 1)
+
+    private static func pointDimension(_ ctx: CGContext, from a: CGPoint, to b: CGPoint, text: String) {
+        let dx = b.x - a.x, dy = b.y - a.y
+        let len = sqrt(dx * dx + dy * dy)
+        guard len > 1 else { return }
+        let ux = dx / len, uy = dy / len
+        ctx.saveGState()
+        ctx.setStrokeColor(dimensionColor.cgColor)
+        ctx.setFillColor(dimensionColor.cgColor)
+        ctx.setLineWidth(0.5)
+        ctx.move(to: a); ctx.addLine(to: b)
+        ctx.strokePath()
+        for (tip, sx, sy) in [(a, -ux, -uy), (b, ux, uy)] {
+            let back = CGPoint(x: tip.x - sx * 5, y: tip.y - sy * 5)
+            ctx.move(to: tip)
+            ctx.addLine(to: CGPoint(x: back.x - sy * 1.6, y: back.y + sx * 1.6))
+            ctx.addLine(to: CGPoint(x: back.x + sy * 1.6, y: back.y - sx * 1.6))
+            ctx.closePath()
+            ctx.fillPath()
+        }
+        let font = UIFont.boldSystemFont(ofSize: 8.5)
+        let str = NSAttributedString(string: text, attributes: [.font: font, .foregroundColor: dimensionColor])
+        let size = str.size()
+        // Place the number beside the middle of the line, on its upper/left side.
+        var nx = -uy, ny = ux
+        if ny > 0 { nx = -nx; ny = -ny }
+        let mid = CGPoint(x: (a.x + b.x) / 2 + nx * (size.height * 0.5 + 2),
+                          y: (a.y + b.y) / 2 + ny * (size.height * 0.5 + 2))
+        let rect = CGRect(x: mid.x - size.width / 2 - 1, y: mid.y - size.height / 2,
+                          width: size.width + 2, height: size.height)
+        ctx.setFillColor(UIColor.white.withAlphaComponent(0.85).cgColor)
+        ctx.fill(rect)
+        UIGraphicsPushContext(ctx)
+        str.draw(at: CGPoint(x: rect.minX + 1, y: rect.minY))
+        UIGraphicsPopContext()
+        ctx.restoreGState()
     }
 
     private static func label(_ ctx: CGContext, _ text: String, at p: CGPoint, size: CGFloat,
@@ -405,6 +490,14 @@ enum DrawingGenerator {
             }
         }
         let h = max(1.5, 0.04 * max(L, H))
+        for d in extras {
+            guard let pair = measuredPoints(d, m) else { continue }
+                let (a, b) = pair
+            let (view, off) = offsets[bestView(a, b)]
+            let pa = view.project(a) + off, pb = view.project(b) + off
+            line(pa, pb, layer: "DIM")
+            text(mmText(d.value), (pa + pb) / 2 + SIMD2(0, 0.3 * h), height: 0.6 * h)
+        }
         let dy = -gap * 0.35
         line(SIMD2(0, dy), SIMD2(L, dy), layer: "DIM")
         text("L=\(mmText(labels.x))", SIMD2(L / 2 - 3 * h, dy - 1.5 * h), height: h)

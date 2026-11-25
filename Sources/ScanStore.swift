@@ -4,6 +4,18 @@ struct ExtraDimension: Codable, Identifiable, Hashable {
     var id = UUID()
     var name: String
     var value: Double   // millimeters
+    /// The two points tapped on the model (meters, model space), so the dimension can be drawn on a view.
+    var p1: [Float]?
+    var p2: [Float]?
+}
+
+/// A spot the user painted for removal: sphere center and radius in meters, model space.
+struct EraseMark: Codable, Hashable {
+    var x: Float
+    var y: Float
+    var z: Float
+    var r: Float
+    var center: SIMD3<Float> { SIMD3(x, y, z) }
 }
 
 struct ScanMeta: Codable {
@@ -17,6 +29,11 @@ struct ScanMeta: Codable {
     var heightMM: Double?
     /// Extra dimensions the user adds to the drawing (hole diameter, wall thickness...).
     var extraDimensions: [ExtraDimension]?
+    /// Cleanup: painted spots to delete, and a cut height above the lowest point (meters, before caliper scale).
+    var erase: [EraseMark]?
+    var cutHeight: Float?
+
+    var hasCleanup: Bool { !(erase ?? []).isEmpty || (cutHeight ?? 0) > 0 }
 }
 
 struct ScanItem: Identifiable, Hashable {

@@ -139,7 +139,7 @@ struct ScanDetailView: View {
             Button("הוסף") { addMeasuredToDrawing() }
             Button("ביטול", role: .cancel) {}
         } message: {
-            Text("המידה שמדדת תופיע בטבלת \"מידות נוספות\" בשרטוט. אפשר לתקן את המספר אחר כך בעריכת מידות.")
+            Text("המידה תופיע כקו מידה על המבט המתאים בשרטוט, ובטבלת \"מידות נוספות\". אפשר לתקן את המספר אחר כך בעריכת מידות.")
         }
         .alert("שם הסריקה", isPresented: $showRename) {
             TextField("שם", text: $newName)
@@ -170,12 +170,75 @@ struct ScanDetailView: View {
             ShareSheet(url: item.url)
         }
         .task { await loadMesh() }
+        .onChange(of: measure.mode) { _, newMode in
+            if newMode == .measure { saveCleanup() }
+        }
         .onChange(of: scan.meta.scale) { _, _ in
             Task { await makeDrawing() }
         }
     }
 
     private var infoPanel: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Picker("", selection: $measure.mode) {
+                Text("מדידה").tag(ViewerMode.measure)
+                Text("ניקוי חלקים מיותרים").tag(ViewerMode.clean)
+            }
+            .pickerStyle(.segmented)
+            if measure.mode == .clean {
+                cleanupPanel
+            } else {
+                measurePanel
+            }
+        }
+        .padding()
+        .background(.bar)
+    }
+
+    private var cleanupPanel: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Picker("", selection: $measure.painting) {
+                Text("סובב מודל").tag(false)
+                Text("צבע למחיקה").tag(true)
+            }
+            .pickerStyle(.segmented)
+            Text(measure.painting
+                 ? "גרור אצבע על מה שלא שייך לחלק. האדום יימחק."
+                 : "סובב והגדל את המודל. לחיצה על נקודה מסמנת אותה למחיקה.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+            HStack {
+                Text("מברשת")
+                    .font(.footnote)
+                Slider(value: Binding(get: { Double(measure.brushFraction) },
+                                      set: { measure.brushFraction = Float($0) }),
+                       in: 0.01...0.15)
+            }
+            HStack {
+                Text("חתוך מלמטה \(String(format: "%.1f", Double(measure.cutHeight) * 1000 * scale)) מ\"מ")
+                    .font(.footnote.monospacedDigit())
+                Slider(value: Binding(get: { Double(measure.cutHeight) },
+                                      set: { measure.setCut(Float($0)) }),
+                       in: 0...Double(measure.modelHeight) * 0.5)
+            }
+            HStack {
+                Button("בטל אחרון") { measure.undoStroke() }
+                Button("נקה הכל", role: .destructive) { measure.clearCleanup() }
+                Spacer()
+                Button("שמור") { measure.mode = .measure }
+                    .buttonStyle(.borderedProminent)
+            }
+        }
+    }
+
+    private func saveCleanup() {
+        scan.meta.erase = measure.marks.isEmpty ? nil : measure.marks
+        scan.meta.cutHeight = measure.cutHeight > 0 ? measure.cutHeight : nil
+        store.save(scan)
+        Task { await makeDrawing() }
+    }
+
+    private var measurePanel: some View {
         VStack(alignment: .leading, spacing: 10) {
             if let size = drawingSizeMM {
                 Text("רוחב \(DrawingGenerator.mmText(size.x)) × עומק \(DrawingGenerator.mmText(size.y)) × גובה \(DrawingGenerator.mmText(size.z)) מ\"מ")
@@ -221,8 +284,6 @@ struct ScanDetailView: View {
                 }
             }
         }
-        .padding()
-        .background(.bar)
     }
 
     private func mm(_ meters: Double) -> String {
@@ -237,6 +298,7 @@ struct ScanDetailView: View {
                 try Exporter.loadMesh(from: url)
             }.value
             mesh = loaded
+            measure.setMesh(loaded, meta: scan.meta)
             sizeMeters = await Task.detached { Exporter.orientedSize(loaded.positions) }.value
             await makeDrawing()
         } catch {
@@ -256,7 +318,8 @@ struct ScanDetailView: View {
         do {
             let size = try await Task.detached(priority: .userInitiated) { () throws -> SIMD3<Double> in
                 try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-                guard let model = DrawingGenerator.prepare(mesh, scale: scale) else { throw ExportError.noGeometry }
+                let cleaned = Cleanup.apply(mesh, meta: meta)
+                guard let model = DrawingGenerator.prepare(cleaned, scale: scale) else { throw ExportError.noGeometry }
                 let labels = SIMD3(meta.widthMM ?? model.size.x,
                                    meta.depthMM ?? model.size.y,
                                    meta.heightMM ?? model.size.z)
@@ -280,8 +343,14 @@ struct ScanDetailView: View {
         guard let d = measure.distanceMeters else { return }
         let name = newDimensionName.trimmingCharacters(in: .whitespaces)
         var list = scan.meta.extraDimensions ?? []
-        list.append(ExtraDimension(name: name.isEmpty ? "מידה \(list.count + 1)" : name,
-                                   value: (d * 1000 * scale * 10).rounded() / 10))
+        var dim = ExtraDimension(name: name.isEmpty ? "מידה \(list.count + 1)" : name,
+                                 value: (d * 1000 * scale * 10).rounded() / 10)
+        if let pair = measure.measuredPoints {
+            let (a, b) = pair
+            dim.p1 = [a.x, a.y, a.z]
+            dim.p2 = [b.x, b.y, b.z]
+        }
+        list.append(dim)
         scan.meta.extraDimensions = list
         store.save(scan)
         Task { await makeDrawing() }
@@ -307,11 +376,12 @@ struct ScanDetailView: View {
         busy = true
         let url = scan.exportsURL.appendingPathComponent("\(scan.id).\(format.rawValue)")
         let scale = self.scale
+        let meta = scan.meta
         Task {
             do {
                 try FileManager.default.createDirectory(at: scan.exportsURL, withIntermediateDirectories: true)
                 try await Task.detached(priority: .userInitiated) {
-                    try Exporter.export(mesh, format: format, scale: scale, to: url)
+                    try Exporter.export(Cleanup.apply(mesh, meta: meta), format: format, scale: scale, to: url)
                 }.value
                 share = ShareItem(url: url)
             } catch {

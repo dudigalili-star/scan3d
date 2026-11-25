@@ -1,10 +1,22 @@
 import Foundation
 
+struct ExtraDimension: Codable, Identifiable, Hashable {
+    var id = UUID()
+    var name: String
+    var value: Double   // millimeters
+}
+
 struct ScanMeta: Codable {
     var name: String
     var created: Date
     /// Multiplier applied on top of the LiDAR scale (1.0 = no caliper correction).
     var scale: Double = 1.0
+    /// Values typed by the user that replace the scanned overall dimensions on the drawing (mm).
+    var widthMM: Double?
+    var depthMM: Double?
+    var heightMM: Double?
+    /// Extra dimensions the user adds to the drawing (hole diameter, wall thickness...).
+    var extraDimensions: [ExtraDimension]?
 }
 
 struct ScanItem: Identifiable, Hashable {

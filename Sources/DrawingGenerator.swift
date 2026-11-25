@@ -213,7 +213,8 @@ enum DrawingGenerator {
 
     /// A4 landscape: front view bottom-left, top view above it, right view beside it (third-angle).
     @discardableResult
-    static func renderPDF(_ m: DrawingModel, title: String, date: Date, to url: URL) throws -> String {
+    static func renderPDF(_ m: DrawingModel, title: String, date: Date,
+                          labels: SIMD3<Double>, extras: [ExtraDimension], to url: URL) throws -> String {
         let page = CGRect(x: 0, y: 0, width: 842, height: 595)
         let area = CGRect(x: 30, y: 30, width: 782, height: 450)
         let pad: CGFloat = 46
@@ -274,13 +275,29 @@ enum DrawingGenerator {
             // Overall dimensions
             let frontRight = fx + CGFloat(L) * s
             let frontTop = baseY - CGFloat(H) * s
-            horizontalDimension(ctx, x1: fx, x2: frontRight, from: baseY, at: baseY + 22, text: mmText(L))
-            verticalDimension(ctx, y1: frontTop, y2: baseY, from: fx, at: fx - 22, text: mmText(H))
-            verticalDimension(ctx, y1: topBase - CGFloat(W) * s, y2: topBase, from: fx, at: fx - 22, text: mmText(W))
+            horizontalDimension(ctx, x1: fx, x2: frontRight, from: baseY, at: baseY + 22, text: mmText(labels.x))
+            verticalDimension(ctx, y1: frontTop, y2: baseY, from: fx, at: fx - 22, text: mmText(labels.z))
+            verticalDimension(ctx, y1: topBase - CGFloat(W) * s, y2: topBase, from: fx, at: fx - 22, text: mmText(labels.y))
 
             label(ctx, "חזית", at: CGPoint(x: fx + CGFloat(L) * s / 2, y: baseY + 36), size: 9, centered: true)
             label(ctx, "מבט עליון", at: CGPoint(x: fx + CGFloat(L) * s / 2, y: topBase + 8), size: 9, centered: true)
             label(ctx, "מבט צד", at: CGPoint(x: rx + CGFloat(W) * s / 2, y: baseY + 8), size: 9, centered: true)
+
+            // Extra dimensions typed by the user
+            if !extras.isEmpty {
+                let box = CGRect(x: 30, y: 492, width: 470, height: 88)
+                ctx.setLineWidth(0.8)
+                ctx.stroke(box)
+                label(ctx, "מידות נוספות (מ\"מ)", at: CGPoint(x: box.maxX - 6, y: box.minY + 5),
+                      size: 9, bold: true, alignRight: true)
+                let perColumn = 4
+                for (i, d) in extras.prefix(12).enumerated() {
+                    let col = CGFloat(i / perColumn), row = CGFloat(i % perColumn)
+                    let x = box.maxX - 6 - col * 156
+                    let y = box.minY + 22 + row * 15
+                    label(ctx, "\(d.name): \(mmText(d.value))", at: CGPoint(x: x, y: y), size: 8.5, alignRight: true)
+                }
+            }
 
             // Title block
             let block = CGRect(x: 812 - 300, y: 492, width: 300, height: 88)
@@ -291,7 +308,7 @@ enum DrawingGenerator {
             let rows = [
                 title,
                 "תאריך: \(df.string(from: date))    יחידות: מ\"מ    קנה מידה: \(scaleLabel(paper))",
-                "מידות כלליות: \(mmText(L)) × \(mmText(W)) × \(mmText(H))",
+                "מידות כלליות: \(mmText(labels.x)) × \(mmText(labels.y)) × \(mmText(labels.z))",
                 "מקור: סריקת LiDAR. מידות קריטיות יש לאמת בקליבר."
             ]
             for (i, row) in rows.enumerated() {
@@ -367,7 +384,7 @@ enum DrawingGenerator {
 
     // MARK: - DXF (millimeters, views laid out like the PDF)
 
-    static func writeDXF(_ m: DrawingModel, to url: URL) throws {
+    static func writeDXF(_ m: DrawingModel, labels: SIMD3<Double>, extras: [ExtraDimension], to url: URL) throws {
         let L = m.size.x, W = m.size.y, H = m.size.z
         let gap = max(10, 0.3 * max(L, W, H))
         let offsets: [(View, SIMD2<Double>)] = [
@@ -390,12 +407,16 @@ enum DrawingGenerator {
         let h = max(1.5, 0.04 * max(L, H))
         let dy = -gap * 0.35
         line(SIMD2(0, dy), SIMD2(L, dy), layer: "DIM")
-        text("L=\(mmText(L))", SIMD2(L / 2 - 3 * h, dy - 1.5 * h), height: h)
+        text("L=\(mmText(labels.x))", SIMD2(L / 2 - 3 * h, dy - 1.5 * h), height: h)
         let dx = -gap * 0.35
         line(SIMD2(dx, 0), SIMD2(dx, H), layer: "DIM")
-        text("H=\(mmText(H))", SIMD2(dx - 6 * h, H / 2), height: h)
+        text("H=\(mmText(labels.z))", SIMD2(dx - 6 * h, H / 2), height: h)
         line(SIMD2(dx, H + gap), SIMD2(dx, H + gap + W), layer: "DIM")
-        text("W=\(mmText(W))", SIMD2(dx - 6 * h, H + gap + W / 2), height: h)
+        text("W=\(mmText(labels.y))", SIMD2(dx - 6 * h, H + gap + W / 2), height: h)
+        for (i, d) in extras.enumerated() {
+            let ascii = d.name.unicodeScalars.allSatisfy { $0.isASCII } ? d.name : "D\(i + 1)"
+            text("\(ascii)=\(mmText(d.value))", SIMD2(L + gap, H + gap + W - Double(i) * 2 * h), height: h)
+        }
         out += "0\nENDSEC\n0\nEOF\n"
         try out.write(to: url, atomically: true, encoding: .ascii)
     }

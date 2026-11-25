@@ -44,6 +44,9 @@ struct ScanDetailView: View {
     @State private var drawingVersion = 0
     @State private var drawingSizeMM: SIMD3<Double>?
     @State private var showRename = false
+    @State private var showDimensionEditor = false
+    @State private var showAddToDrawing = false
+    @State private var newDimensionName = ""
     @State private var newName = ""
 
     private var scale: Double { scan.meta.scale }
@@ -66,6 +69,16 @@ struct ScanDetailView: View {
             } else if let drawingURL {
                 PDFKitView(url: drawingURL)
                     .id(drawingVersion)
+                    .overlay(alignment: .bottom) {
+                        Button {
+                            showDimensionEditor = true
+                        } label: {
+                            Label("עריכת מידות", systemImage: "ruler")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.large)
+                        .padding(.bottom, 24)
+                    }
             } else {
                 Spacer()
                 ProgressView("מכין שרטוט…")
@@ -101,6 +114,20 @@ struct ScanDetailView: View {
                 }
                 .disabled(mesh == nil || busy)
             }
+        }
+        .sheet(isPresented: $showDimensionEditor) {
+            DimensionsEditor(measured: drawingSizeMM, initial: scan.meta) { updated in
+                scan.meta = updated
+                store.save(scan)
+                Task { await makeDrawing() }
+            }
+        }
+        .alert("הוספת המידה לשרטוט", isPresented: $showAddToDrawing) {
+            TextField("שם, למשל קוטר חור", text: $newDimensionName)
+            Button("הוסף") { addMeasuredToDrawing() }
+            Button("ביטול", role: .cancel) {}
+        } message: {
+            Text("המידה שמדדת תופיע בטבלת \"מידות נוספות\" בשרטוט. אפשר לתקן את המספר אחר כך בעריכת מידות.")
         }
         .alert("שם הסריקה", isPresented: $showRename) {
             TextField("שם", text: $newName)
@@ -149,10 +176,14 @@ struct ScanDetailView: View {
             }
 
             if let d = measure.distanceMeters {
+                Text("מרחק: \(mm(d)) מ\"מ")
+                    .font(.title3.bold().monospacedDigit())
                 HStack {
-                    Text("מרחק: \(mm(d)) מ\"מ")
-                        .font(.title3.bold().monospacedDigit())
-                    Spacer()
+                    Button("הוסף לשרטוט") {
+                        newDimensionName = ""
+                        showAddToDrawing = true
+                    }
+                    .buttonStyle(.bordered)
                     Button("כיול לפי קליבר") {
                         caliperText = ""
                         showCalibration = true
@@ -209,12 +240,18 @@ struct ScanDetailView: View {
         let pdf = scan.exportsURL.appendingPathComponent("\(scan.id)-drawing.pdf")
         let dxf = scan.exportsURL.appendingPathComponent("\(scan.id)-drawing.dxf")
         let folder = scan.exportsURL
+        let meta = scan.meta
         do {
             let size = try await Task.detached(priority: .userInitiated) { () throws -> SIMD3<Double> in
                 try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
                 guard let model = DrawingGenerator.prepare(mesh, scale: scale) else { throw ExportError.noGeometry }
-                try DrawingGenerator.renderPDF(model, title: title, date: date, to: pdf)
-                try DrawingGenerator.writeDXF(model, to: dxf)
+                let labels = SIMD3(meta.widthMM ?? model.size.x,
+                                   meta.depthMM ?? model.size.y,
+                                   meta.heightMM ?? model.size.z)
+                let extras = meta.extraDimensions ?? []
+                try DrawingGenerator.renderPDF(model, title: title, date: date,
+                                               labels: labels, extras: extras, to: pdf)
+                try DrawingGenerator.writeDXF(model, labels: labels, extras: extras, to: dxf)
                 return model.size
             }.value
             drawingSizeMM = size
@@ -224,6 +261,17 @@ struct ScanDetailView: View {
         } catch {
             errorText = "יצירת השרטוט נכשלה: \(error.localizedDescription)"
         }
+    }
+
+    private func addMeasuredToDrawing() {
+        guard let d = measure.distanceMeters else { return }
+        let name = newDimensionName.trimmingCharacters(in: .whitespaces)
+        var list = scan.meta.extraDimensions ?? []
+        list.append(ExtraDimension(name: name.isEmpty ? "מידה \(list.count + 1)" : name,
+                                   value: (d * 1000 * scale * 10).rounded() / 10))
+        scan.meta.extraDimensions = list
+        store.save(scan)
+        Task { await makeDrawing() }
     }
 
     private func applyCalibration() {
